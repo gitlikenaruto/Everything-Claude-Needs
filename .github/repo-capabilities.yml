@@ -64,7 +64,8 @@ edge_functions: false
 graphify: false
 
 # A Node package at the repo root -- package.json.
-node: false
+# Declared true 2026-09-15 (dev-main gov/RP.05, operator R117/R118): this fork holds both.
+node: true
 
 # Python SOURCE anywhere in the tree -- requirements.txt, pyproject.toml, or any .py file
 # (excluding .github/guards/, which is this standard's own scaffolding and not your code).
@@ -73,4 +74,5 @@ node: false
 # here: repo-guard's own walk, pruning .git / node_modules / __pycache__ / .venv AND any
 # nested checkout (a directory carrying its own .git). On dev-main that is 22 -- the
 # unpruned walk said 85, the excess being two worktrees holding OTHER branches.
-python: false
+# Declared true 2026-09-15 (dev-main gov/RP.05, operator R117/R118): this fork holds both.
+python: true
