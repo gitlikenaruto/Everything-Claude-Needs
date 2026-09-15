@@ -1,0 +1,76 @@
+# repo-capabilities.yml -- what surfaces THIS repository declares it has.
+#
+# CANONICAL: dev-main\rules\repo-capabilities-baseline.yml
+# SYNCED AS: <repo>/.github/repo-capabilities.yml   (SEED -- written once, never overwritten)
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE EXISTS, AND WHY IT IS NOT A CONFIG SWITCH
+# ---------------------------------------------------------------------------
+# A required status check has three possible behaviours, and only one is safe to require:
+#
+#   1. NEVER FIRES            -- `branches: [main]` in a repo whose default branch is `master`, or
+#                                any `paths:` filter. The PR hangs on "Expected" forever and can
+#                                never merge. ledger\s4\PENDING.md section 1.1 names this failure.
+#   2. FIRES AND ALWAYS FAILS -- the guard's subject does not exist here and the guard does not
+#                                degrade. tcp-supabase's graphify-graph-guard is exactly this: it
+#                                reads supabase/functions/graphify-ingest/index.ts and says in its
+#                                own text "This guard does not degrade to a skip". Ported unchanged
+#                                into a repo with no graphify surface it BLOCKS EVERY PR.
+#   3. FIRES AND REPORTS HONESTLY -- runs the real check where the subject exists, and where it does
+#                                not, says so explicitly and passes.
+#
+# Only 3 is requireable. This file is how a repo says which surfaces are real, so a guard can reach
+# verdict 3 without guessing.
+#
+# ---------------------------------------------------------------------------
+# THE PART THAT MAKES IT A GATE RATHER THAN AN OPT-OUT
+# ---------------------------------------------------------------------------
+# Every declaration is checked BOTH WAYS against the actual tree:
+#
+#   declared | present | verdict
+#   ---------|---------|--------------------------------------------------------------
+#   false    | false   | PASS  -- "this repo declares no X surface", stated out loud
+#   false    | TRUE    | FAIL  -- undeclared surface. You added it and did not declare it.
+#   true     | true    | PASS  -- and the deeper check for X actually runs
+#   true     | FALSE   | FAIL  -- phantom declaration. You declared a surface you do not have.
+#
+# So setting a flag to `false` is NOT a way to switch a guard off. It is a CLAIM about this
+# repository, and the guard fails if the claim is untrue. A repo that later grows a supabase/
+# directory while still declaring `tier0: false` goes RED -- which is the point, and the reason a
+# vacuous check here cannot quietly stay vacuous forever.
+#
+# ---------------------------------------------------------------------------
+# FORMAT: deliberately flat `key: true|false`, parsed WITHOUT PyYAML.
+# ---------------------------------------------------------------------------
+# A guard should depend on as little as possible: every dependency is one more thing that can be
+# missing on the day the guard matters. Flat booleans need ~10 lines of parser and no import at all.
+# Comments and blank lines are ignored.
+#
+# (An earlier draft justified this by asserting "GitHub runners do not ship PyYAML in the default
+# python". That was never measured and the evidence points the other way -- tcp-supabase's own
+# workflow-diff-gate calls yaml.safe_load on ubuntu-latest and passes. The dependency-count argument
+# holds on its own; the unverified factual claim was removed rather than left standing as doctrine.)
+# Any value that is not exactly `true` or `false` is an ERROR, not a default -- a typo'd flag
+# silently reading as `false` would switch a guard off by accident, which is the failure mode this
+# file exists to prevent.
+
+# Supabase SQL migrations -- supabase/migrations/**. The tier-0 surface.
+tier0: false
+
+# Supabase Edge Functions -- supabase/functions/**.
+edge_functions: false
+
+# The Graphify code graph -- infra/graphify/graph.json and/or the graphify-ingest EF.
+graphify: false
+
+# A Node package at the repo root -- package.json.
+node: false
+
+# Python SOURCE anywhere in the tree -- requirements.txt, pyproject.toml, or any .py file
+# (excluding .github/guards/, which is this standard's own scaffolding and not your code).
+# Widened 2026-07-31 from "a package at the repo root": that rule made dev-main declare
+# python:false while holding python source it would never lint. Counting rule for any figure
+# here: repo-guard's own walk, pruning .git / node_modules / __pycache__ / .venv AND any
+# nested checkout (a directory carrying its own .git). On dev-main that is 22 -- the
+# unpruned walk said 85, the excess being two worktrees holding OTHER branches.
+python: false

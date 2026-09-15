@@ -1,0 +1,257 @@
+# repo-guards.yml -- the portable guard suite. One job per required status check.
+#
+# TEMPLATE. Synced to <repo>/.github/workflows/repo-guards.yml by dev-main\scripts\sync-repo-files.py.
+# Canonical: dev-main\templates\workflows\repo-guards.yml. Never hand-edit the synced copy.
+#
+# All logic lives in .github/guards/repo-guard.py, which ships a --selftest exercising BOTH
+# directions of every check. That is deliberate: guard logic written inline in a `run:` block can
+# only be exercised by pushing to CI, which makes its must-fire control something you assert rather
+# than run. CLAUDE.md section 11 requires a two-sided control on every gate.
+#
+# ---------------------------------------------------------------------------------------------
+# THE THREE RULES THAT MAKE THESE SAFE TO REGISTER AS REQUIRED CHECKS
+# ---------------------------------------------------------------------------------------------
+#   1. NO `branches:` FILTER. dayforge-daily-tracker's default branch is `master`, so a filter of
+#      [main] would mean this NEVER FIRES there -- and a required check that never fires hangs the
+#      PR on "Expected" forever. 6 of tcp-supabase's 8 guards carry `branches: [main]` and would be
+#      silently dead in that repo.
+#
+#   2. NO `paths:` FILTER. A workflow filtered to a subtree reports nothing on a PR that misses it,
+#      which is the same "Expected" hang. Filtering happens INSIDE the guard, after it has already
+#      guaranteed itself a conclusion.
+#
+#   3. THE SUBJECT MAY BE ABSENT, AND THAT IS A PASS -- SAID OUT LOUD. Every job reports a
+#      conclusion in every repo. Where a repo declares no such surface the job prints
+#      "declares no X surface" and exits 0. It is NOT a skip: `if:` conditions that skip a job leave
+#      a required check pending forever, which is the same brick by a different route.
+#
+# WHAT A `false` IN .github/repo-capabilities.yml DOES NOT MEAN: it is not an off-switch. It is a
+# CLAIM about this repository, checked both ways. Declaring `tier0: false` in a repo that HAS
+# supabase/migrations fails the capability-gate. That is what stops a vacuous check staying vacuous.
+#
+# ---------------------------------------------------------------------------------------------
+# BOUNDARY B-1 -- CLOSED 2026-07-31 (S6) by the guard-integrity job at the bottom of this file.
+# ---------------------------------------------------------------------------------------------
+# Every job here checks out the PULL REQUEST's tree and runs the guard FROM IT, so a PR could
+# weaken .github/guards/repo-guard.py -- or delete a job out of this file -- and have the
+# tampered copy report itself green. The drift gate that would catch that
+# (dev-main\validators\repo-standard\check.py) runs only in dev-main, which is not checked out here.
+#
+# This was an ACCEPTED RISK for exactly as long as it took to write the job that removes it. It
+# was accepted 'while the account is single-owner' -- a safeguard made of prose, depending on
+# someone remembering to re-read it before adding a collaborator. CLAUDE.md section 10 calls that
+# shape 'a rule that manufactures the mistake it then blames them for', so it is now a check.
+#
+# THE RESIDUAL, NAMED RATHER THAN GLOSSED. The VERDICT is rendered from the base branch's copy of
+# repo-guard.py (git show), which a PR cannot alter -- but the SHELL that computes its inputs is
+# this file, and GitHub loads this file from THE PULL REQUEST'S OWN BRANCH on a pull_request
+# trigger. A PR can therefore hardcode empty inputs before the trusted call and this job reports
+# PASS. That is the same self-grading shape, one level up, and NO in-repo arrangement closes it:
+# any workflow GitHub runs for a PR is a workflow the PR can edit.
+#
+# What actually closes it is OUT of this file: a `pull_request_target` job that checks out nothing
+# from the PR, or branch protection plus a human reading the diff -- which is the standard's stated
+# position anyway (a required check is not the human-in-the-loop step). Recorded so the next reader
+# does not mistake this job for a complete answer. (s42 future-proofing-auditor, round 5.)
+#
+# guard-integrity compares every STRICT synced file against THE DEFAULT BRANCH, which a pull
+# request cannot alter. Needs no external source and no second repository.
+## SHA PIN: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+name: repo-guards
+
+on:
+  pull_request:
+  push:
+    # Both conventions on purpose -- see rule 1. Naming a branch a repo does not have is harmless;
+    # omitting one it does have is silent.
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-guards-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capability-gate:
+    name: capability-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # The guard's own controls run FIRST, in the repo being guarded. A guard whose selftest is
+      # broken must not be able to report green on the thing it is guarding: repo-guard.py returns
+      # exit 3 for a selftest failure, deliberately outside the range gates.yml folds to a skip.
+      - name: Guard selftest (must pass before any verdict is trusted)
+        run: python3 .github/guards/repo-guard.py --selftest
+      - name: Every declaration matches the tree
+        run: python3 .github/guards/repo-guard.py capabilities
+
+  phase0f-gate:
+    name: phase0f-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # ADAPTED from tcp-supabase's phase0f-gate, which needs SB_SVC_SECRET_KEY to query the live
+      # tier-0 audit. A repo with no tier-0 surface cannot run that and must not be left unguarded
+      # either, so the secretless assertion is: this repo declares no tier-0 surface AND has none.
+      # Where a repo DOES declare one, the migrations themselves are checked.
+      - name: Tier-0 surface
+        run: python3 .github/guards/repo-guard.py tier0
+
+  ci-lint-gate:
+    name: ci-lint-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # ADAPTED: the tcp-supabase original lints against a live Supabase project. Here the lint set
+      # is chosen from the repo's DECLARED language surface, so a repo with neither node nor python
+      # reports a clean no-op instead of failing on a toolchain it does not have.
+      - name: Language surface lint
+        run: python3 .github/guards/repo-guard.py lint
+
+  repo-security-guardian:
+    name: repo-security-guardian
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # REPLACES tcp-security-guardian rather than narrowing it. That guard needs 4 secrets,
+      # including a Groq API key for an LLM review; none exist in an app repo. Hindsight de43f3d9:
+      # a deterministic rule that cannot hold is RETIRED, not scope-patched into a narrow shape
+      # still claiming to be the same check. These two assertions need no secret anywhere.
+      - name: Actions supply chain
+        run: python3 .github/guards/repo-guard.py security
+
+  graphify-graph-guard:
+    name: graphify-graph-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # ADAPTED, and this is the guard that proves the whole design. The tcp-supabase original has
+      # ZERO secret references -- so a secret-count analysis calls it "portable" -- yet its first
+      # step reads supabase/functions/graphify-ingest/index.ts and says in its own text "This guard
+      # does not degrade to a skip", exiting 1 when absent. Ported unchanged it does not hang, it
+      # BLOCKS EVERY PR in all 11 app repos. Zero secrets is not the same as portable.
+      - name: Graphify surface
+        run: python3 .github/guards/repo-guard.py graphify
+
+  block-automerge:
+    name: block-automerge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      # tcp-supabase's auto-merge-mirror is deliberately NOT ported: it auto-merges, which is the
+      # exact opposite of the requirement that a human understand what becomes permanent BEFORE it
+      # does. Simply omitting it would leave the behaviour merely absent; this makes it DETECTED, so
+      # that enabling auto-merge anywhere becomes a red check rather than a quiet merge.
+      #
+      # NOTE ON WHAT THIS IS NOT. A required status check proves a change is mechanically sound. It
+      # does NOT prove the operator understood what became permanent. They are orthogonal, and this
+      # suite must never be presented as satisfying the human-in-the-loop requirement.
+      - name: Auto-merge must not be enabled
+        run: python3 .github/guards/repo-guard.py automerge
+
+  guard-integrity:
+    name: guard-integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # ------------------------------------------------------------------------------------
+      # BOUNDARY B-1, CLOSED. This is the job that stops a PR grading its own homework.
+      #
+      # Every other job here checks out the PULL REQUEST's tree and runs the guard FROM IT. So a
+      # PR could weaken .github/guards/repo-guard.py -- or delete a job out of this file -- and
+      # the tampered copy would then report itself green. The drift gate that would catch it
+      # (dev-main/validators/repo-standard/check.py) runs only in dev-main, which is not checked
+      # out here and never will be.
+      #
+      # The fix needs no external source: compare against THE DEFAULT BRANCH, which a pull request
+      # cannot alter. If a STRICT synced file differs from the version on the base branch, say so
+      # and fail. A human then has to look at it -- which is the entire point, and is not something
+      # a green tick can substitute for.
+      #
+      # THIS FIRES ON LEGITIMATE GUARD UPDATES TOO, and that is intended, not a false positive.
+      # These files are STRICT: their one editable source is dev-main. A PR changing them here is
+      # either the sync landing a reviewed change (look, then merge) or someone editing a guard in
+      # the repo it guards (look, then refuse). Both deserve a human.
+      #
+      # FIRST ADOPTION IS NOT TAMPERING: on the PR that introduces these files they are absent from
+      # the base branch, so there is nothing to compare and the job reports a clean no-op.
+      - name: STRICT guard files must match the default branch
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # THE SHELL ONLY ASKS GIT. The VERDICT belongs to repo-guard.py, where it has controls
+          # in both directions -- because this file states, four screens up, that logic written
+          # inline in a run: block can only be exercised by pushing to CI. This job closes the
+          # highest-severity boundary (B-1) and was the one place breaking that rule. Caught
+          # independently by the s42 devops-auditor and future-proofing-auditor in round 3.
+          if [ -z "${BASE:-}" ]; then
+            echo "guard-integrity: not a pull request; nothing to compare. PASS (no-op)."
+            exit 0
+          fi
+          # No `git fetch`: persist-credentials: false strips the token, so a fetch cannot
+          # authenticate against a private repo -- and fetch-depth: 0 already brought every remote
+          # branch down, so origin/$BASE is present locally.
+          if ! git rev-parse --verify "origin/$BASE" >/dev/null 2>&1; then
+            echo "::error title=base branch not present::refusing to report a pass without comparing. Ensure fetch-depth: 0."
+            exit 1
+          fi
+          # The path list below is a FIXED LITERAL SET and no entry contains whitespace, which is
+          # why passing ABSENT/CHANGED as space-separated strings is safe. If a seventh STRICT path
+          # is ever added WITH a space in it, this breaks quietly -- pass a delimiter instead.
+          ABSENT=""
+          CHANGED=""
+          for f in .github/guards/repo-guard.py \
+                   .github/workflows/repo-guards.yml \
+                   .github/workflows/workflow-diff-gate.yml \
+                   .github/workflows/actionlint.yml \
+                   .github/workflows/security-scan.yml \
+                   .gitleaks.toml; do
+            if ! git cat-file -e "origin/$BASE:$f" 2>/dev/null; then
+              ABSENT="$ABSENT $f"
+            elif ! git diff --quiet "origin/$BASE" -- "$f"; then
+              CHANGED="$CHANGED $f"
+            fi
+          done
+          # RUN THE VERDICT FROM THE BASE BRANCH'S COPY, NEVER THE PR'S.
+          #
+          # Round 3 moved this decision into repo-guard.py so it would have offline controls. That
+          # was right about testability and WRONG about trust: repo-guard.py is one of the files
+          # this job polices, so invoking the PR's copy let a PR weaken a guard AND edit
+          # integrity_verdict() to return 0 in the same commit -- self-grading, which is the exact
+          # thing B-1 is about. The job reported the file as changed and then asked the changed
+          # file whether that mattered.
+          #
+          # git show reads the blob from origin/$BASE, which a pull request cannot alter.
+          # (s42 defect-hunter, round 5 -- B-1 was not closed until this line.)
+          # FIRST ADOPTION IS THE ONE HONEST EXCEPTION. On the PR that introduces the suite there is
+          # no guard on the base branch to trust -- and nothing can have been WEAKENED, because
+          # nothing existed. Falling back to the PR's copy there is safe and is said out loud;
+          # falling back silently would be the hole.
+          TRUSTED="$RUNNER_TEMP/trusted-guard.py"
+          if git show "origin/$BASE:.github/guards/repo-guard.py" > "$TRUSTED" 2>/dev/null \
+             && [ -s "$TRUSTED" ]; then
+            echo "guard-integrity: rendering the verdict from origin/$BASE's guard, not this PR's."
+          else
+            echo "::notice title=first adoption::no guard on $BASE yet, so there is no prior version to trust and none to weaken; using this PR's copy."
+            cp .github/guards/repo-guard.py "$TRUSTED"
+          fi
+          python3 "$TRUSTED" integrity --absent "$ABSENT" --changed "$CHANGED"

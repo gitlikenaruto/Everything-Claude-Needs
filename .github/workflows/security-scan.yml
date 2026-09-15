@@ -1,0 +1,76 @@
+# security-scan.yml -- secret scanning on every PR and every push to the default branch.
+#
+# TEMPLATE. Copy to <repo>/.github/workflows/security-scan.yml. Portable as-is: no project-specific
+# values, no secrets beyond the automatic GITHUB_TOKEN. Pair it with rules/gitleaks.toml, synced to
+# the repo root as .gitleaks.toml -- gitleaks resolves GITLEAKS_CONFIG relative to the runner's
+# checkout, so the config must exist inside the repo.
+#
+# THE GAP THIS CLOSES: as of 2026-07-29, 11 of 12 repos had NO secret scanning at all.
+#
+# THREE THINGS HERE ARE DELIBERATE AND EASY TO BREAK:
+#
+#   1. ACTIONS ARE SHA-PINNED, NOT TAG-PINNED. A tag is mutable -- `@v6` can be repointed at new code
+#      by anyone who controls the action, and your workflow silently runs it with your token. The
+#      trailing `# v6` comment is only a human label; the sha is the contract.
+#
+#   2. `fetch-depth: 0`. gitleaks scans COMMITS, not just the working tree. With the default shallow
+#      clone it scans almost nothing and PASSES -- a green tick that means "we looked at one commit."
+#      That is worse than no scan, because it reads as coverage.
+#
+#      READ THIS BEFORE TRUSTING A GREEN TICK: on a `pull_request` event the action scans the PR's
+#      COMMIT RANGE, not the whole history. So a green PR check means "this PR introduced nothing",
+#      NOT "this repository is clean". The `push` trigger to the default branch is what covers
+#      history. Measured on a repo whose PR checks had been green for months: a local full-history
+#      `gitleaks detect` surfaced 33 findings the PR-time scan had never been asked about.
+#      (All 33 turned out benign -- historical, gitignored, or the rule matching a JSON field
+#      literally named "key" -- but the gate had never claimed otherwise, and nobody had checked.)
+#
+#      A LOCAL scan is not the same check either: `gitleaks detect --no-git` walks the working tree
+#      INCLUDING gitignored files, so it reports scratch directories and worktrees that can never
+#      be committed. Use git mode to ask "what is in this repo", `--no-git` to ask "what is on this
+#      disk". They answer different questions and disagreeing is not a defect.
+#
+#   3. NO `paths:` FILTER, ON PURPOSE. A workflow with a paths filter does not report a conclusion on
+#      PRs that touch nothing matching, so if it is a REQUIRED check it hangs as "Expected" forever
+#      and blocks the merge. Any workflow you intend to require must fire on every PR.
+
+name: security-scan
+
+on:
+  # BOTH conventions on purpose. dayforge-daily-tracker's default branch is `master`, and a
+  # filter of [main] alone means this workflow NEVER FIRES there -- the exact "fails by not
+  # running" mode noted below, which looks identical to passing. Listing a branch a repo does not
+  # have is harmless; omitting one it does have is silent.
+  push:
+    branches: [main, master]
+  # No branches filter: fires on PRs to ANY base, so it always reports a conclusion.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: gitleaks scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # so findings can be commented on the PR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # Full history: see note 2 above. A shallow clone makes this scan meaningless.
+          fetch-depth: 0
+          # Do not leave the checkout token in .git/config for later steps to pick up.
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

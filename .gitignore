@@ -1,3 +1,66 @@
+# BASELINE .gitignore -- canonical source, synced into each repo as `.gitignore`.
+#
+# Extracted 2026-07-29 (S4) from tcp-supabase/.gitignore, keeping only what applies to ANY repo.
+# A consuming repo appends its own project-specific entries below the marker at the end.
+#
+# WHY THIS EXISTS ALONGSIDE ~/.gitignore_global. `core.excludesfile` already points at
+# ~/.gitignore_global, which covers these with ZERO copies on this machine -- and that is the
+# better mechanism where it applies. But it is MACHINE-LOCAL: a clone on any other machine, or a
+# CI runner, gets none of it. So the portable rules are committed per repo and the global file
+# stays for operator conveniences that should not be imposed on a clone.
+
+# --- Language and tooling caches ---------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+.venv/
+venv/
+
+# --- Editor and OS noise -----------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+
+# --- Claude Code -------------------------------------------------------------
+# Subagent isolated worktrees. Transient, auto-removed when the agent finishes.
+.claude/worktrees/
+
+# Machine-local permission overrides. NEVER committed: they encode one operator's
+# allow-list and would silently WIDEN permissions for anyone else who clones the
+# repo. This is the entry most worth understanding rather than copying -- a
+# committed settings.local.json is a privilege escalation that looks like config.
+.claude/settings.local.json
+
+# --- Working files -----------------------------------------------------------
+# Session scratch: temp and secret-bearing working files. Never committed.
+.scratch/
+
+# --- Secrets -----------------------------------------------------------------
+# Belt and braces. A .env that reaches a commit is a rotation event, not a revert.
+.env
+.env.*
+!.env.example
+**/.env
+
+# --- Build output ------------------------------------------------------------
+*.zip
+*.tar.gz
+
+# =============================================================================
+# sync-repo-files.py replaces everything ABOVE the marker line below, and
+# preserves everything AFTER it, so a repo keeps its own ignores across syncs.
+#
+# The marker MUST be the last line this file owns. An earlier version put these
+# explanatory lines BELOW it, so every sync carried them forward while the
+# baseline re-supplied them -- the file grew on each run. A sync that is not
+# idempotent is not a sync, it is an append.
+#
+# Do not remove or reword the marker, and do not add anything after it here.
+# =============================================================================
+# REPO-SPECIFIC ENTRIES BELOW THIS LINE
+# --- carried over from this repo's pre-sync .gitignore (S4 first sync) ---
 # Environment files
 .env
 .env.local

@@ -1,0 +1,68 @@
+# actionlint.yml -- mechanical static lint of every workflow file, on every PR.
+#
+# TEMPLATE. Copy to <repo>/.github/workflows/actionlint.yml. Portable as-is.
+#
+# WHY IT IS WORTH HAVING IN A REPO WITH ONLY TWO WORKFLOWS: a broken workflow does not fail loudly, it
+# fails by NOT RUNNING. A YAML typo, a bad `if:` expression or an unquoted glob produces a workflow
+# that simply never triggers -- and a gate that never triggers looks identical to a gate that passes.
+# actionlint also runs shellcheck over every `run:` block, which is where most real defects live.
+#
+# THREE DELIBERATE CHOICES:
+#
+#   1. NO `paths:` FILTER. Required checks must report a conclusion on EVERY pull request. A workflow
+#      filtered to `.github/workflows/**` never reports on a PR that touches only source, so if it is
+#      registered as required the check hangs as "Expected" forever and the PR can never merge. This
+#      is the single most common way a well-intentioned required check bricks a repo.
+#
+#   2. SELF-CONTAINED INSTALLER, PINNED VERSION. The official download script at a pinned version
+#      rather than a marketplace action -- one less third party holding a token, and the version is
+#      explicit rather than whatever `latest` resolved to this morning.
+#
+#   3. `persist-credentials: false` AND read-only `permissions`. This job needs to read files and
+#      nothing else. A lint job that can write to the repo is an unnecessary blast radius.
+
+name: actionlint
+
+on:
+  # No branches filter. A filter of [main] would never fire in a repo whose default branch is
+  # `master` (dayforge-daily-tracker is one), and a required check that never fires hangs
+  # "Expected" forever. Firing on every PR is the only safe shape for a check you may require.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run actionlint (pinned, all workflows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PINNED TO A COMMIT, NOT A BRANCH. This previously fetched the installer from `main`
+          # -- a MUTABLE ref -- and piped it straight into bash, inside a workflow suite that
+          # sha-pins everything else and whose own repo-security-guardian check exists to fail
+          # exactly this pattern. Whoever controls that branch controlled what ran here.
+          # 03d0035 is the commit tagged v1.7.7, the version installed below.
+          #
+          # AND THE DOWNLOAD IS NO LONGER PROCESS-SUBSTITUTED INTO BASH. `bash <(curl ...)`
+          # cannot fail the step when curl fails: the substitution still opens, bash reads an
+          # empty script and exits 0, so a network blip or a 404 reads as a clean lint. Fetch to
+          # a file, assert it is non-empty, then run it.
+          curl -sSfL -o /tmp/dl-actionlint.bash \
+            "https://raw.githubusercontent.com/rhysd/actionlint/03d0035246f3e81f36aed592ffb4bebf33a03106/scripts/download-actionlint.bash"
+          test -s /tmp/dl-actionlint.bash
+          bash /tmp/dl-actionlint.bash 1.7.7
+          ./actionlint -color
