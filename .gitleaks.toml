@@ -1,0 +1,186 @@
+# BASELINE gitleaks config -- canonical source, synced into each repo as `.gitleaks.toml`.
+#
+# Extracted 2026-07-29 (S4) from tcp-supabase/.gitleaks.toml, which is that repo's EXTENDED
+# version (223 lines, 38 of them TCP-specific). This is the universal part only.
+#
+# WHY IT IS SYNCED RATHER THAN INHERITED. gitleaks resolves GITLEAKS_CONFIG relative to the
+# runner's checkout ($GITHUB_WORKSPACE). It cannot read a file in an ancestor directory or in
+# another repository, so the config genuinely has to exist inside each repo. That makes it a
+# managed derivative: canonical here, pushed by scripts/sync-repo-files.py, drift-gated by
+# validators/repo-standard/.
+#
+# THE GAP THIS CLOSES: as of 2026-07-29, 11 of 12 repos had NO secret scanning at all.
+#
+# ---------------------------------------------------------------------------
+# HOW TO EXTEND THIS IN A CONSUMING REPO
+#
+# Add repo-specific entries below the baseline. Two rules make an allowlist trustworthy, and
+# both were learned from real false positives:
+#
+#   1. NEVER add an allowlist entry without stating WHY, inline, next to it. An unexplained
+#      suppression is indistinguishable from a mistake, and the next person cannot tell whether
+#      removing it is safe. Every entry in the TCP config carries its reason and a spec pointer.
+#
+#   2. NEVER allowlist a path that could hold a REAL credential. Allowlist a path only when
+#      something ELSE already guarantees it -- a database-side secret trigger, a review gate,
+#      or the fact that the content is deliberately fake. Say which guarantee applies.
+#
+# An allowlist is a claim that a detector's finding there would be noise. If that claim is
+# wrong, the detector is now silent on exactly the file you stopped looking at.
+# ---------------------------------------------------------------------------
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Baseline suppressions -- universally safe, reason stated per entry"
+
+paths = [
+  # Validator and gate test fixtures. These DELIBERATELY contain fake secret-shaped strings
+  # and fake operator traces, because a detection gate proven only on clean input is unproven
+  # by construction -- it needs a known-bad case to fire on. Scanning fixtures whose entire
+  # purpose is to hold fake secrets is a guaranteed false positive.
+  #
+  # This is safe ONLY while the fixtures are labeled reconstructions. If a real value is ever
+  # pasted into a fixture, this line is what hides it -- so fixtures are reviewed on that basis.
+  '''\.claude/validators/.*/fixtures/.*''',
+
+  # Lock files: machine-generated dependency graphs, no authored content.
+  '''(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Cargo\.lock)$''',
+]
+
+# NOTE: no `regexes` or `stopwords` in this GLOBAL `[allowlist]`, on purpose. Both are the
+# highest-risk allowlist types -- a regex or stopword HERE suppresses a PATTERN everywhere in the
+# repo, for EVERY rule, rather than in one known location. Add them only per-repo, with the reason
+# and the guarantee written next to them.
+#
+# AMENDED 2026-09-15 (S26 wave 35, gov/CI.22): this note used to read "no `regexes` or
+# `stopwords` in the baseline", and the baseline now carries exactly one `regexes` entry -- so the
+# sentence would have been false the moment it was scrolled past. The distinction it was reaching
+# for is real, and is now stated rather than implied: a regex in the GLOBAL `[allowlist]` above is
+# unscoped and blinds every rule at once; a regex in a `[[rules.allowlists]]` block is scoped to
+# ONE named rule and is checked against that rule's extracted secret. The entry added at the
+# bottom of this file is the second kind. The hazard this note names is genuine, which is exactly
+# why that entry carries an anchored literal shape and a two-sided control rather than a
+# convenience pattern.
+#
+# FIX PASS 2026-09-14 (S26 wave 35, gov/CI.22, FOLLOW-UP): the entry this note describes was
+# proven WRONG the same wave it landed. A skeptic re-ran it against gitleaks 8.30.1 and found that
+# because `(?:-[a-z0-9]+)+` has NO upper bound on a segment's length, `api_key: "s1-w1-<40 lowercase
+# hex chars>"` is a real-looking credential that ALSO satisfies the shape -- 1 finding on the
+# baseline without the entry, 0 findings with it. The sentence this correction is attached to
+# ("no random high-entropy string... satisfies it") was FALSE from the moment it was written; the
+# anchors alone do not bound length. See the corrected entry at the bottom of this file, which adds
+# per-segment and per-slug-shape length caps derived from the repo's own measured convention
+# (`meta.lanes` keys in `ledger/program-board.html` plus every `Lane key:` line under
+# `ledger/*/handoffs/`: 64 real `s<N>-w<N>-<lane>` slugs, longest total 17 chars, longest single
+# segment 10 chars ("skillcheck"/"skillchain"), at most 2 hyphenated trailing segments). The fix
+# does NOT use a lookahead (`(?=...)`) to bound total length -- Go's RE2, which gitleaks's regex
+# engine is built on, does not support lookahead/lookbehind at all, so a regex using one would
+# either fail to compile or (depending on the TOML loader) be silently rejected. Bounding each
+# segment's length is what does the actual work here: the planted credential in the DONE-TEST is a
+# single unbroken run with no hyphens in it, so it can only ever occupy ONE segment slot, and
+# capping that slot's length is sufficient to exclude it -- there is no need to also bound the
+# slug's total length once every segment is capped and the segment count is capped.
+
+# ---------------------------------------------------------------------------
+# RULE-SCOPED ALLOWLIST: the wave/lane slug, which `generic-api-key` reads as a credential.
+#
+# THE SHAPE. `generic-api-key` is an entropy heuristic over an assignment-shaped construct. The
+# token `key` immediately before a quoted or backticked value is enough to arm it, and a
+# hyphenated wave/lane slug scores ~3.5-3.9 Shannon entropy -- above the rule's threshold. MEASURED
+# 2026-09-15 against live gitleaks 8.30.1 with THIS baseline: `git show <PR#213-era commit>` was
+# not re-run, but the CURRENT firing shape was reproduced directly by scanning
+# `ledger/s26/w18/wave-18.js` -- three findings, all `key: '<lane-slug>'` entries in that script's
+# LANES roster (lines 559/563/571: s26-w18-recut, s26-w18-catalogue, s26-w18-handoff), NONE of
+# them the `type: 'object'` / `required: [...]` / `b27_before: { type: 'integer' }` JSON-Schema
+# lines gov/CI.22's own acceptance names. THAT IS A CORRECTION TO THE ROW'S OWN EVIDENCE, carried
+# here rather than silently acted on: the false-positive CLASS the row names (a `key:`-shaped
+# construct assigned a hyphenated wave/lane slug) is real and still needs this fix; the SPECIFIC
+# lines it cites are not the ones that fire under this gitleaks version. A fix aimed only at the
+# cited lines would have missed the actual trigger.
+#
+#   a Lane-slug heading, backticked, e.g. s26-w15-probes  <- the handoff convention several
+#                                          lane documents use at the top of the file
+#   a lane-roster entry naming that slug, e.g. s26-w18-recut  <- `key: '<slug>'` in a wave
+#                                          dispatch script's LANES table
+#
+# Neither is a credential. Both are the same slug that also appears in the lane roster, in
+# lane-writes lease records, in `meta.lanes` on the program board and in commit messages.
+#
+# WHY THIS IS A RULE ENTRY AND NOT A FINGERPRINT. `.gitleaksignore` fingerprints are exact
+# `commit:file:rule:startLine` matches -- no wildcard, no regex, no partial form. So one
+# fingerprint suppresses one line of one commit, and the NEXT handoff or dispatch script written
+# to the same convention trips the rule again -- MEASURED: `.gitleaksignore` already carries more
+# than a dozen such fingerprints for this identical shape, accumulated across separate PRs. A
+# suppression list that grows one entry per document is a ratchet nobody reads, and a
+# per-document suppression for a REPO-WIDE convention is the shape that rots into a silencer. The
+# convention is repo-wide, so the exemption has to be too.
+#
+# THE GUARANTEE, which is what the header above demands of any allowlist entry. This does NOT
+# allowlist a path, and it does NOT relax the rule. It exempts ONE anchored, LENGTH-BOUNDED shape:
+#
+#     ^s\d{1,3}-w\d{1,3}(?:-[a-z][a-z0-9]{0,11}){1,3}$
+#
+# a lowercase `s<session>-w<wave>-<lane>` slug, session and wave numbers each 1-3 digits, followed
+# by 1-3 hyphenated segments, each starting with a letter and at most 12 characters long. Those
+# bounds are the repo's OWN measured convention plus a small headroom margin, not a guess: the
+# longest of the 64 real slugs on record is 17 characters total, the longest single segment is 10
+# characters ("skillcheck"/"skillchain"), and no slug on record uses more than 2 trailing segments
+# -- see the FIX PASS note above for the census command. It is anchored at both ends and admits no
+# uppercase letter, no underscore, no dot, no slash and no character outside [a-z0-9-], same as
+# before. UNLIKE THE PRIOR VERSION OF THIS ENTRY, it also bounds LENGTH per segment: a hyphen-free
+# run of characters longer than 12 -- which is what any random high-entropy secret looks like,
+# hex or base62 -- cannot occupy a single segment slot and therefore cannot satisfy the shape no
+# matter what prefix precedes it. The exemption is narrower than the convention it protects, not
+# wider, and it is now ALSO narrower than any string an attacker could dress as the convention
+# without deliberately hyphenating their own secret into <=12-character chunks.
+#
+# TWO-SIDED CONTROL, and it is the thing to re-run before trusting this entry. The must-not-fire
+# side: a lane handoff and a wave dispatch script written to the mandated conventions produce ZERO
+# findings for this shape. The MUST-FIRE side: a planted synthetic credential in the SAME document
+# still fires, in three placements -- bare, prefixed `s1-w1-`, and prefixed with a real lane slug
+# plus `-`. Two mutations are both proven to turn the must-fire side red: (1) widening the
+# character class, e.g. `^[A-Za-z0-9-]+$` in place of the anchored shape (the ORIGINAL two-sided
+# proof, still valid and still swallows the plant); (2) dropping the per-segment length bound --
+# i.e. reverting to the shape this entry replaces, `^s\d+-w\d+(?:-[a-z0-9]+)+$` -- which is the
+# SPECIFIC mutation that reintroduces the residual this FIX PASS closes: the `s1-w1-`-prefixed
+# plant goes from firing back to silent. Both mutations are proof the entry is doing discriminating
+# work rather than silencing the rule.
+# MEASURED 2026-09-15 (S26 wave 35, original entry): re-run against live gitleaks 8.30.1 with a
+# freshly generated synthetic planted key (never committed, never printed in any handoff); the
+# entry as written then left the plant firing, and mutation (1) above swallowed it.
+# RE-MEASURED 2026-09-14 (S26 wave 35, FIX PASS): against live gitleaks 8.30.1, from a scratch
+# directory outside this repo, with a freshly generated 40-character synthetic key (Python
+# `secrets.token_hex(20)`, never committed, never printed in any handoff or this file) --
+# BEFORE this fix: `api_key: "s1-w1-<plant>"` alone in a scratch file scans as `no leaks found`
+# (exit 0) against the entry as it stood at the top of this note -- the residual, reproduced.
+# AFTER this fix: the same specimen scans as 1 finding on `generic-api-key`. Mutation (2) above,
+# applied to a scratch copy of this config only, reproduces the pre-fix silence exactly. The three
+# real must-not-fire specimens this repo actually contains (`ledger/s26/w18/wave-18.js` lines
+# 559/563/571 and the `Lane key:` heading in `ledger/s28/handoffs/s28-w1-skills.md`) still scan as
+# `no leaks found` with the fixed regex -- the bound removes the false negative without
+# reintroducing the false positive it was added to prevent.
+#
+# FIRST BUILT 2026-09-08 (S26 wave 29) for gov/CI.22, proven on all three control sides, then
+# REVERTED OUT OF THAT WAVE deliberately -- not because the fix was wrong, but because applying it
+# to `rules/gitleaks.toml` ALONE left `.gitleaks.toml` (the file this repo's gitleaks run actually
+# reads, per `.github/workflows/security-scan.yml`'s `GITLEAKS_CONFIG: .gitleaks.toml`) out of
+# sync, which turned gov/CI.24's `repo-standard` drift gate red from a worktree, and because the
+# full fix implies a 12-repo `sync-repo-files.py` propagation gov/RP.02 blocks from an
+# undisclosed decision. See `ledger/s26/w29/CI22-GITLEAKS-PAYLOAD.md` for the full account. THIS
+# APPLICATION UPDATES BOTH `rules/gitleaks.toml` (canonical) AND `.gitleaks.toml` (what this repo's
+# gitleaks run reads) BY HAND, keeping them byte-identical WITHIN THIS REPO without running
+# `scripts/sync-repo-files.py` -- so `repo-standard` scoped to dev-main stays clean and the
+# eleven-repo propagation remains a separate, explicit decision rather than one made by omission.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "generic-api-key"
+# Every other attribute -- regex, entropy, keywords -- is INHERITED from the default rule.
+# Restating any of them here would silently pin a copy that stops tracking upstream.
+
+  [[rules.allowlists]]
+  description = "wave/lane slug (s<session>-w<wave>-<lane>), length-bounded per the repo's measured convention -- see above (FIX PASS 2026-09-14, gov/CI.22)"
+  regexTarget = "secret"
+  regexes = ['''^s\d{1,3}-w\d{1,3}(?:-[a-z][a-z0-9]{0,11}){1,3}$''']

@@ -1,0 +1,169 @@
+# PORTED AS-IS from gitlikenaruto/tcp-supabase on 2026-07-31 by S6, with this header added and no
+# change to any check. It is the ONLY one of the eight tcp-supabase guards that needed no adaptation,
+# and it is worth recording why, because the reason is not the one a secret-count analysis gives:
+#
+#   * `on: [pull_request]` with NO branches filter -- so it fires in dayforge-daily-tracker, whose
+#     default branch is `master`, where the six guards carrying `branches: [main]` never would.
+#   * NO paths filter, and a Detect step that gives a non-matching diff a no-op success path -- so it
+#     always reports a conclusion and can never hang a PR on "Expected".
+#   * It reads only the PR's own diff. It needs no secret AND no repo-specific file, which is the
+#     part that matters: graphify-graph-guard also has zero secrets, and still hard-fails without
+#     supabase/functions/graphify-ingest/index.ts.
+#
+# It was already written to the standard the rest of this suite had to be adapted to meet.
+#
+# .github/workflows/workflow-diff-gate.yml
+#
+# TRIGGER-PARITY MIRROR -- CI supply-chain gate for workflow-touching PRs.
+#
+# PROBLEM (PR #257 incident): A PR that modified .github/workflows/** merged while the
+#   CI composite-action manifest contained a secrets context in a description field.
+#   YAML + actionlint both passed; the runner caught the error at load time, breaking
+#   CI across every open PR until hotfix #261.
+#
+# SOLUTION: A BLOCKING gate for PRs touching .github/workflows/** or .github/actions/**.
+#   The three real checks exit 1 on any finding.
+#   Register "workflow-diff-gate" in branch protection required checks.
+#
+# FIX HISTORY:
+#   PR #268 (original): path-filtered trigger + multi-line Python + unescaped grep
+#   PR #275 (20260615-a): always-run trigger -- on: [pull_request] + detect step
+#   PR #276 (20260615-b): single-line python3 -c (YAML block scalar indent fix)
+#   PR #277 (20260615-c): grep -E with escaped braces to remove unintended expression
+#     trigger from Guard 2 (GitHub expression preprocessor scans all run block text,
+#     including bash comment lines, and startup-fails on any unrecognized expression)
+#
+# CHECKS (run only when workflow/action files changed):
+#   1. No actions/checkout step pinned to floating tag (@vN); must be SHA.
+#   2. No composite-action input description field contains a secrets context expr.
+#   3. Changed YAML files parse cleanly (python3 + yaml.safe_load).
+#
+# SHA PIN: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+name: Workflow Diff Gate
+
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-diff-gate:
+    name: workflow-diff-gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # ------------------------------------------------------------------
+      # DETECT: does this PR touch .github/workflows/** or .github/actions/**?
+      # ------------------------------------------------------------------
+      - name: Detect workflow/action changes
+        id: detect
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          # SPLIT ON PURPOSE. Piping git diff into grep with a trailing || true makes a
+          # genuine git failure (bad ref, shallow-clone edge case) indistinguishable from
+          # "grep matched nothing": pipefail propagates the error, || true swallows it,
+          # CHANGED reads empty, and the gate reports a trivial pass while skipping all three
+          # real checks on a PR that DOES touch workflow files. That is the house pattern --
+          # an operation reporting success while doing less than it claims -- and CLAUDE.md
+          # section 7 lists three prior instances of it. Found by the s35 reviewer.
+          if ! ALL=$(git diff --name-only "origin/$BASE" HEAD); then
+            echo "::error title=git diff failed::cannot determine changed files; refusing to report a trivial pass"
+            exit 1
+          fi
+          CHANGED=$(printf '%s\n' "$ALL" | grep -E '^\.github/(workflows|actions)/' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Workflow/action files changed -- running full gate:"
+            echo "$CHANGED"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No workflow/action changes -- gate passes trivially."
+          fi
+
+      # ------------------------------------------------------------------
+      # CHECK 1: All actions/checkout steps must be SHA-pinned.
+      # ------------------------------------------------------------------
+      - name: Guard -- no unpinned checkout steps
+        if: steps.detect.outputs.relevant == 'true'
+        run: |
+          echo "=== Checking for unpinned actions/checkout references ==="
+          UNPINNED=$(grep -rn "uses: actions/checkout@v[0-9]" .github/workflows/ .github/actions/ 2>/dev/null || true)
+          if [ -n "$UNPINNED" ]; then
+            echo "::error::Unpinned actions/checkout found. All checkout steps must use the full 40-char SHA."
+            echo "  Required: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6"
+            echo "$UNPINNED"
+            exit 1
+          fi
+          echo "PASS: all actions/checkout references are SHA-pinned."
+
+      # ------------------------------------------------------------------
+      # CHECK 2: No secrets context in composite-action description fields.
+      # grep uses -E with escaped braces (\$\{\{) so the run block text
+      # does not contain the unescaped dollar-brace-brace sequence that
+      # GitHub's expression preprocessor would try to evaluate.
+      # ------------------------------------------------------------------
+      - name: Guard -- no secrets context in composite-action descriptions
+        if: steps.detect.outputs.relevant == 'true'
+        run: |
+          echo "=== Checking for secrets context in composite-action description fields ==="
+          VIOLATIONS=$(grep -rn -E 'description:.*\$\{\{.*secrets\.' .github/actions/ 2>/dev/null || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::secrets context found in a composite-action description field."
+            echo "  The secrets context is unavailable at action load time; this breaks ALL"
+            echo "  workflows referencing the action (PR #257 / hotfix #261 incident)."
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "PASS: no secrets context found in composite-action description fields."
+
+      # ------------------------------------------------------------------
+      # CHECK 3: Changed YAML files parse cleanly.
+      # Single-line python3 -c avoids multi-line inline Python whose col-0
+      # code would violate the YAML block scalar indent bound.
+      # ------------------------------------------------------------------
+      - name: Guard -- changed YAML files parse cleanly
+        if: steps.detect.outputs.relevant == 'true'
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          echo "=== Validating YAML syntax of changed workflow/action files ==="
+          FAIL=0
+          if ! ALL=$(git diff --name-only "origin/$BASE" HEAD); then
+            echo "::error title=git diff failed::cannot list changed YAML; refusing to skip the parse check"
+            exit 1
+          fi
+          CHANGED=$(printf '%s\n' "$ALL" | grep -E '^\.github/(workflows|actions)/.*\.yml$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No .github workflow/action YAML files in diff."
+            exit 0
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          while IFS= read -r f; do
+            if [ -f "$f" ]; then
+              python3 -c "import yaml,sys; yaml.safe_load(open('$f')); print('PASS: $f')" 2>&1 \
+                || { echo "::error::YAML parse failed: $f"; FAIL=1; }
+            fi
+          done <<< "$CHANGED"
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::One or more changed YAML files failed to parse. Fix before merging."
+            exit 1
+          fi
+          echo "PASS: all changed YAML files parse cleanly."
+
+      - name: Summary
+        if: success()
+        run: |
+          if [ "${{ steps.detect.outputs.relevant }}" == "true" ]; then
+            echo "=== Workflow Diff Gate: workflow/action changes validated -- ALL CHECKS PASSED ==="
+          else
+            echo "=== Workflow Diff Gate: no workflow/action changes -- trivially satisfied ==="
+          fi

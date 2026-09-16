@@ -264,6 +264,8 @@ function runTests() {
     const result = spawnSync(process.execPath, [eccJs, '--dry-run', '--json', 'typescript'], {
       encoding: 'utf8',
       env: { ...process.env },
+      // The JSON plan is ~1.1 MB; the 1 MB default maxBuffer kills the child (status null).
+      maxBuffer: 16 * 1024 * 1024,
     });
     assert.strictEqual(result.status, 0, `Expected exit 0, got ${result.status}: ${result.stderr}`);
     const payload = JSON.parse(result.stdout);
