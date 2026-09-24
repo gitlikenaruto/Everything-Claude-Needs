@@ -1,39 +1,89 @@
-# repo-guards.yml -- the portable guard suite. One job per required status check.
+# repo-guards.yml -- the portable guard suite. ONE required job, `guards`, runs every check.
 #
 # TEMPLATE. Synced to <repo>/.github/workflows/repo-guards.yml by dev-main\scripts\sync-repo-files.py.
 # Canonical: dev-main\templates\workflows\repo-guards.yml. Never hand-edit the synced copy.
 #
-# All logic lives in .github/guards/repo-guard.py, which ships a --selftest exercising BOTH
+# All guard logic lives in .github/guards/repo-guard.py, which ships a --selftest exercising BOTH
 # directions of every check. That is deliberate: guard logic written inline in a `run:` block can
 # only be exercised by pushing to CI, which makes its must-fire control something you assert rather
 # than run. CLAUDE.md section 11 requires a two-sided control on every gate.
 #
 # ---------------------------------------------------------------------------------------------
+# WHY ONE JOB (gov/CI.30, S26 wave 40t) -- AND WHAT DID NOT CHANGE
+# ---------------------------------------------------------------------------------------------
+# GitHub bills every JOB rounded UP to a whole minute of runtime, no matter how short it
+# actually ran. This file used to run seven ~5-second jobs (six guards plus guard-integrity),
+# and actionlint.yml and workflow-diff-gate.yml added one job each on every PR: nine billed
+# minutes per push for well under a minute of real work, on every repo that takes this bundle.
+# The exact minute totals this collapse saves are a MEASUREMENT, not a fact for this template to
+# carry -- a dated number synced into every consuming repo decays the moment it is re-measured.
+# Re-derive it rather than trust this line: measured in dev-main ledger/s26/w40/ci30/ (gov/CI.30).
+#
+# NO CHECK WAS REMOVED. Every former job is now a STEP of `guards`, named after the job it
+# replaces, run after ONE checkout. Each check step carries `if: !cancelled()`, so a failing
+# check does not hide the ones after it: every check still reports its own pass/fail in the job
+# log, and the job fails if ANY of them failed. The two retired workflows are folded in as well:
+# actionlint runs on every pull request exactly as actionlint.yml did (pinned installer, every
+# workflow), and the three workflow-diff-gate checks run when a PR touches .github/workflows or
+# .github/actions, exactly as workflow-diff-gate.yml did.
+#
+# WHAT IS COARSER, SAID OUT LOUD: branch protection now sees ONE green/red context instead of
+# nine. Which check failed is in the step list of the `guards` run, one click deeper.
+#
+# ---------------------------------------------------------------------------------------------
+# THE TRANSITIONAL ALIAS JOBS AT THE BOTTOM, AND WHY THEY MUST NOT BE DELETED YET
+# ---------------------------------------------------------------------------------------------
+# Branch protection in every repo that takes this bundle still REQUIRES the eight old contexts
+# (capability-gate, phase0f-gate, ci-lint-gate, repo-security-guardian, graphify-graph-guard,
+# block-automerge, actionlint, workflow-diff-gate). A required context that nothing reports hangs
+# the PR on "Expected" forever -- including the sync PR that delivers THIS file, which is how the
+# collapse would have bricked every repo it reached. And `guards` cannot be registered first:
+# scripts/apply-branch-protection.py refuses any context whose workflow is not yet on the default
+# branch, for a reason it documents (a context seen only on its own introducing PR never reports
+# on the next one).
+#
+# So each old context is kept as a job that REPORTS THE RESULT OF `guards`: it is SKIPPED when
+# `guards` succeeded -- a job skipped by a job-level `if:` reports Success to branch protection
+# and bills nothing -- and it RUNS AND FAILS when `guards` failed, was cancelled or was skipped.
+# `always()` rather than `!cancelled()` on purpose: under `!cancelled()` a cancelled run would
+# SKIP the alias, and a skip reads as Success, so cancelling `guards` would satisfy every old
+# required check without a single guard having passed.
+#
+# RETIRE THE ALIASES ONLY AFTER apply-branch-protection.py --apply HAS REGISTERED `guards` AND
+# DROPPED ALL EIGHT old contexts in EVERY repo that takes this bundle. Removing them earlier hangs
+# every PR in any repo still requiring an old name.
+#
+# ---------------------------------------------------------------------------------------------
 # THE THREE RULES THAT MAKE THESE SAFE TO REGISTER AS REQUIRED CHECKS
 # ---------------------------------------------------------------------------------------------
-#   1. NO `branches:` FILTER. dayforge-daily-tracker's default branch is `master`, so a filter of
-#      [main] would mean this NEVER FIRES there -- and a required check that never fires hangs the
-#      PR on "Expected" forever. 6 of tcp-supabase's 8 guards carry `branches: [main]` and would be
-#      silently dead in that repo.
+#   1. NO `branches:` FILTER ON pull_request. dayforge-daily-tracker's default branch is `master`,
+#      so a filter of [main] would mean this NEVER FIRES there -- and a required check that never
+#      fires hangs the PR on "Expected" forever. 6 of tcp-supabase's 8 guards carry
+#      `branches: [main]` and would be silently dead in that repo.
 #
 #   2. NO `paths:` FILTER. A workflow filtered to a subtree reports nothing on a PR that misses it,
-#      which is the same "Expected" hang. Filtering happens INSIDE the guard, after it has already
+#      which is the same "Expected" hang. Filtering happens INSIDE the job, after it has already
 #      guaranteed itself a conclusion.
 #
-#   3. THE SUBJECT MAY BE ABSENT, AND THAT IS A PASS -- SAID OUT LOUD. Every job reports a
-#      conclusion in every repo. Where a repo declares no such surface the job prints
-#      "declares no X surface" and exits 0. It is NOT a skip: `if:` conditions that skip a job leave
-#      a required check pending forever, which is the same brick by a different route.
+#   3. THE SUBJECT MAY BE ABSENT, AND THAT IS A PASS -- SAID OUT LOUD. `guards` reports a conclusion
+#      in every repo. Where a repo declares no such surface the check prints "declares no X
+#      surface" and exits 0. WHAT HANGS A REQUIRED CHECK IS WORKFLOW-LEVEL FILTERING: a workflow
+#      skipped by a branch, path or commit-message filter never starts, so its checks stay
+#      "Pending". A JOB skipped by a job-level `if:` is different -- GitHub reports it as Success.
+#      That makes `if:` on a REQUIRED job dangerous in the opposite direction (a skip can pass a
+#      check nothing ran), which is why `guards` carries no job-level `if:` and the alias jobs
+#      below skip ONLY when `guards` itself succeeded.
 #
 # WHAT A `false` IN .github/repo-capabilities.yml DOES NOT MEAN: it is not an off-switch. It is a
 # CLAIM about this repository, checked both ways. Declaring `tier0: false` in a repo that HAS
-# supabase/migrations fails the capability-gate. That is what stops a vacuous check staying vacuous.
+# supabase/migrations fails the capability-gate step. That is what stops a vacuous check staying
+# vacuous.
 #
 # ---------------------------------------------------------------------------------------------
-# BOUNDARY B-1 -- CLOSED 2026-07-31 (S6) by the guard-integrity job at the bottom of this file.
+# BOUNDARY B-1 -- CLOSED 2026-07-31 (S6) by the guard-integrity job below.
 # ---------------------------------------------------------------------------------------------
-# Every job here checks out the PULL REQUEST's tree and runs the guard FROM IT, so a PR could
-# weaken .github/guards/repo-guard.py -- or delete a job out of this file -- and have the
+# The `guards` job checks out the PULL REQUEST's tree and runs the guard FROM IT, so a PR could
+# weaken .github/guards/repo-guard.py -- or delete a step out of this file -- and have the
 # tampered copy report itself green. The drift gate that would catch that
 # (dev-main\validators\repo-standard\check.py) runs only in dev-main, which is not checked out here.
 #
@@ -55,7 +105,9 @@
 # does not mistake this job for a complete answer. (s42 future-proofing-auditor, round 5.)
 #
 # guard-integrity compares every STRICT synced file against THE DEFAULT BRANCH, which a pull
-# request cannot alter. Needs no external source and no second repository.
+# request cannot alter. Needs no external source and no second repository. It is ADVISORY and must
+# stay a separate job: scripts/apply-branch-protection.py records why requiring it bricks every
+# sync PR, and folding it into `guards` would make it required by the back door.
 ## SHA PIN: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
 name: repo-guards
@@ -75,84 +127,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  capability-gate:
-    name: capability-gate
+  guards:
+    name: guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # fetch-depth: 0 because the workflow-surface detection below diffs against origin/$BASE.
+      # No `git fetch` anywhere: persist-credentials: false strips the token, so a fetch cannot
+      # authenticate against a private repo -- and fetch-depth: 0 already brought every remote
+      # branch down.
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      # ---- formerly job `capability-gate` ------------------------------------------------------
       # The guard's own controls run FIRST, in the repo being guarded. A guard whose selftest is
       # broken must not be able to report green on the thing it is guarding: repo-guard.py returns
       # exit 3 for a selftest failure, deliberately outside the range gates.yml folds to a skip.
-      - name: Guard selftest (must pass before any verdict is trusted)
+      # The later steps still run (so every verdict is visible), and the job fails regardless.
+      - name: capability-gate -- guard selftest (must pass before any verdict is trusted)
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py --selftest
-      - name: Every declaration matches the tree
+      - name: capability-gate -- every declaration matches the tree
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py capabilities
 
-  phase0f-gate:
-    name: phase0f-gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      # ---- formerly job `phase0f-gate` ---------------------------------------------------------
       # ADAPTED from tcp-supabase's phase0f-gate, which needs SB_SVC_SECRET_KEY to query the live
       # tier-0 audit. A repo with no tier-0 surface cannot run that and must not be left unguarded
       # either, so the secretless assertion is: this repo declares no tier-0 surface AND has none.
       # Where a repo DOES declare one, the migrations themselves are checked.
-      - name: Tier-0 surface
+      - name: phase0f-gate -- tier-0 surface
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py tier0
 
-  ci-lint-gate:
-    name: ci-lint-gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      # ---- formerly job `ci-lint-gate` ---------------------------------------------------------
       # ADAPTED: the tcp-supabase original lints against a live Supabase project. Here the lint set
       # is chosen from the repo's DECLARED language surface, so a repo with neither node nor python
       # reports a clean no-op instead of failing on a toolchain it does not have.
-      - name: Language surface lint
+      - name: ci-lint-gate -- language surface lint
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py lint
 
-  repo-security-guardian:
-    name: repo-security-guardian
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      # ---- formerly job `repo-security-guardian` -----------------------------------------------
       # REPLACES tcp-security-guardian rather than narrowing it. That guard needs 4 secrets,
       # including a Groq API key for an LLM review; none exist in an app repo. Hindsight de43f3d9:
       # a deterministic rule that cannot hold is RETIRED, not scope-patched into a narrow shape
       # still claiming to be the same check. These two assertions need no secret anywhere.
-      - name: Actions supply chain
+      - name: repo-security-guardian -- Actions supply chain
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py security
 
-  graphify-graph-guard:
-    name: graphify-graph-guard
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      # ---- formerly job `graphify-graph-guard` -------------------------------------------------
       # ADAPTED, and this is the guard that proves the whole design. The tcp-supabase original has
       # ZERO secret references -- so a secret-count analysis calls it "portable" -- yet its first
       # step reads supabase/functions/graphify-ingest/index.ts and says in its own text "This guard
       # does not degrade to a skip", exiting 1 when absent. Ported unchanged it does not hang, it
       # BLOCKS EVERY PR in all 11 app repos. Zero secrets is not the same as portable.
-      - name: Graphify surface
+      - name: graphify-graph-guard -- Graphify surface
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py graphify
 
-  block-automerge:
-    name: block-automerge
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      # ---- formerly job `block-automerge` ------------------------------------------------------
       # tcp-supabase's auto-merge-mirror is deliberately NOT ported: it auto-merges, which is the
       # exact opposite of the requirement that a human understand what becomes permanent BEFORE it
       # does. Simply omitting it would leave the behaviour merely absent; this makes it DETECTED, so
@@ -161,12 +199,156 @@ jobs:
       # NOTE ON WHAT THIS IS NOT. A required status check proves a change is mechanically sound. It
       # does NOT prove the operator understood what became permanent. They are orthogonal, and this
       # suite must never be presented as satisfying the human-in-the-loop requirement.
-      - name: Auto-merge must not be enabled
+      - name: block-automerge -- auto-merge must not be enabled
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python3 .github/guards/repo-guard.py automerge
+
+      # ---- formerly workflow `actionlint.yml` (job `actionlint`) ---------------------------------
+      # Mechanical static lint of every workflow file, on every pull request -- UNCONDITIONALLY,
+      # exactly as the standalone workflow ran. It is NOT gated on the PR touching .github: the
+      # base branch is not proof of a clean lint (strict=false lets two separately-green PRs merge
+      # into a combination nobody linted; .github/actionlint.yaml sits outside workflows/; the
+      # runner's shellcheck is upgraded under unchanged files), and inside this one job it costs a
+      # few seconds of an already-billed minute rather than a minute of its own.
+      #
+      # WHY IT IS WORTH HAVING IN A REPO WITH ONLY TWO WORKFLOWS: a broken workflow does not fail
+      # loudly, it fails by NOT RUNNING. A YAML typo, a bad `if:` expression or an unquoted glob
+      # produces a workflow that simply never triggers -- and a gate that never triggers looks
+      # identical to a gate that passes. actionlint also runs shellcheck over every `run:` block.
+      #
+      # One difference from the standalone workflow, deliberate: it lints the PR's MERGE ref (the
+      # checkout above) rather than its head commit -- the tree that would actually land.
+      - name: actionlint -- pinned, all workflows
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PINNED TO A COMMIT, NOT A BRANCH. This previously fetched the installer from `main`
+          # -- a MUTABLE ref -- and piped it straight into bash, inside a workflow suite that
+          # sha-pins everything else and whose own repo-security-guardian check exists to fail
+          # exactly this pattern. Whoever controls that branch controlled what ran here.
+          # 03d0035 is the commit tagged v1.7.7, the version installed below.
+          #
+          # AND THE DOWNLOAD IS NO LONGER PROCESS-SUBSTITUTED INTO BASH. `bash <(curl ...)`
+          # cannot fail the step when curl fails: the substitution still opens, bash reads an
+          # empty script and exits 0, so a network blip or a 404 reads as a clean lint. Fetch to
+          # a file, assert it is non-empty, then run it.
+          curl -sSfL -o /tmp/dl-actionlint.bash \
+            "https://raw.githubusercontent.com/rhysd/actionlint/03d0035246f3e81f36aed592ffb4bebf33a03106/scripts/download-actionlint.bash"
+          test -s /tmp/dl-actionlint.bash
+          bash /tmp/dl-actionlint.bash 1.7.7
+          ./actionlint -color
+
+      # ---- formerly workflow `workflow-diff-gate.yml` (job `workflow-diff-gate`) ------------------
+      # CI supply-chain gate for workflow-touching PRs. PROBLEM (tcp-supabase PR #257 incident): a PR
+      # that modified .github/workflows/** merged while a composite-action manifest carried a
+      # secrets context in a description field. YAML and actionlint both passed; the runner caught
+      # it at load time, breaking CI across every open PR until hotfix #261. The three checks below
+      # run only when this PR touches .github/workflows/** or .github/actions/**; otherwise the
+      # detect step says so and they are skipped, which is a pass -- as it always was.
+      - name: workflow-diff-gate -- detect workflow/action changes
+        id: detect
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          # SPLIT ON PURPOSE. Piping git diff into grep with a trailing || true makes a
+          # genuine git failure (bad ref, shallow-clone edge case) indistinguishable from
+          # "grep matched nothing": pipefail propagates the error, || true swallows it,
+          # CHANGED reads empty, and the gate reports a trivial pass while skipping all three
+          # real checks on a PR that DOES touch workflow files. That is the house pattern --
+          # an operation reporting success while doing less than it claims -- and CLAUDE.md
+          # section 7 lists three prior instances of it. Found by the s35 reviewer.
+          if ! ALL=$(git diff --name-only "origin/$BASE" HEAD); then
+            echo "::error title=git diff failed::cannot determine changed files; refusing to report a trivial pass"
+            exit 1
+          fi
+          CHANGED=$(printf '%s\n' "$ALL" | grep -E '^\.github/(workflows|actions)/' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Workflow/action files changed -- running the three workflow-diff-gate checks:"
+            echo "$CHANGED"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No workflow/action changes -- the three workflow-diff-gate checks are not needed and are skipped (PASS)."
+          fi
+
+      # CHECK 1: all actions/checkout steps must be SHA-pinned.
+      - name: workflow-diff-gate -- no unpinned checkout steps
+        if: ${{ !cancelled() && steps.detect.outputs.relevant == 'true' }}
+        run: |
+          echo "=== Checking for unpinned actions/checkout references ==="
+          UNPINNED=$(grep -rn "uses: actions/checkout@v[0-9]" .github/workflows/ .github/actions/ 2>/dev/null || true)
+          if [ -n "$UNPINNED" ]; then
+            echo "::error::Unpinned actions/checkout found. All checkout steps must use the full 40-char SHA."
+            echo "  Required: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6"
+            echo "$UNPINNED"
+            exit 1
+          fi
+          echo "PASS: all actions/checkout references are SHA-pinned."
+
+      # CHECK 2: no secrets context in composite-action description fields. grep uses -E with
+      # escaped braces so the run block text does not contain the unescaped dollar-brace-brace
+      # sequence that GitHub's expression preprocessor would try to evaluate.
+      - name: workflow-diff-gate -- no secrets context in composite-action descriptions
+        if: ${{ !cancelled() && steps.detect.outputs.relevant == 'true' }}
+        run: |
+          echo "=== Checking for secrets context in composite-action description fields ==="
+          VIOLATIONS=$(grep -rn -E 'description:.*\$\{\{.*secrets\.' .github/actions/ 2>/dev/null || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::secrets context found in a composite-action description field."
+            echo "  The secrets context is unavailable at action load time; this breaks ALL"
+            echo "  workflows referencing the action (PR #257 / hotfix #261 incident)."
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "PASS: no secrets context found in composite-action description fields."
+
+      # CHECK 3: changed YAML files parse cleanly. The file name reaches Python as an ARGUMENT, not
+      # spliced into the program text: the standalone workflow interpolated '$f' into `python3 -c`,
+      # so a PR adding a file whose NAME contains a quote could run arbitrary Python here.
+      - name: workflow-diff-gate -- changed YAML files parse cleanly
+        if: ${{ !cancelled() && steps.detect.outputs.relevant == 'true' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          echo "=== Validating YAML syntax of changed workflow/action files ==="
+          FAIL=0
+          if ! ALL=$(git diff --name-only "origin/$BASE" HEAD); then
+            echo "::error title=git diff failed::cannot list changed YAML; refusing to skip the parse check"
+            exit 1
+          fi
+          CHANGED=$(printf '%s\n' "$ALL" | grep -E '^\.github/(workflows|actions)/.*\.yml$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No .github workflow/action YAML files in diff."
+            exit 0
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          while IFS= read -r f; do
+            if [ -f "$f" ]; then
+              python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1])); print("PASS: " + sys.argv[1])' "$f" 2>&1 \
+                || { echo "::error::YAML parse failed: $f"; FAIL=1; }
+            fi
+          done <<< "$CHANGED"
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::One or more changed YAML files failed to parse. Fix before merging."
+            exit 1
+          fi
+          echo "PASS: all changed YAML files parse cleanly."
 
   guard-integrity:
     name: guard-integrity
     runs-on: ubuntu-latest
+    # gov/CI.30 item 1, R147: dev-main IS the canonical source of these STRICT files (see the
+    # BOUNDARY B-1 comment block above), so every legitimate edit here necessarily differs from
+    # origin/$BASE and this job failed 28 of 28 times in dev-main with zero real catches -- it was
+    # built to catch a CONSUMER repo weakening a synced copy, and dev-main is never a consumer of
+    # itself in the sense B-1 is about. `guard-integrity` is NOT a required status check in dev-main
+    # branch protection (verified live: gh api repos/gitlikenaruto/dev-main/branches/main/protection
+    # -- required_status_checks.contexts omits it), so skipping the job here cannot hang a PR on
+    # "Expected". Every OTHER repo still runs it: this condition is false only for dev-main itself.
+    if: github.repository != 'gitlikenaruto/dev-main'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -175,8 +357,8 @@ jobs:
       # ------------------------------------------------------------------------------------
       # BOUNDARY B-1, CLOSED. This is the job that stops a PR grading its own homework.
       #
-      # Every other job here checks out the PULL REQUEST's tree and runs the guard FROM IT. So a
-      # PR could weaken .github/guards/repo-guard.py -- or delete a job out of this file -- and
+      # The `guards` job checks out the PULL REQUEST's tree and runs the guard FROM IT. So a PR
+      # could weaken .github/guards/repo-guard.py -- or delete a step out of this file -- and
       # the tampered copy would then report itself green. The drift gate that would catch it
       # (dev-main/validators/repo-standard/check.py) runs only in dev-main, which is not checked
       # out here and never will be.
@@ -215,14 +397,16 @@ jobs:
             exit 1
           fi
           # The path list below is a FIXED LITERAL SET and no entry contains whitespace, which is
-          # why passing ABSENT/CHANGED as space-separated strings is safe. If a seventh STRICT path
-          # is ever added WITH a space in it, this breaks quietly -- pass a delimiter instead.
+          # why passing ABSENT/CHANGED as space-separated strings is safe. If a STRICT path is ever
+          # added WITH a space in it, this breaks quietly -- pass a delimiter instead.
+          #
+          # actionlint.yml and workflow-diff-gate.yml LEFT this list in gov/CI.30 (S26 wave 40t):
+          # they are retired from the synced set, their checks now live in THIS file (which is on
+          # the list), and a sync PR DELETING them is the rollout itself, not tampering.
           ABSENT=""
           CHANGED=""
           for f in .github/guards/repo-guard.py \
                    .github/workflows/repo-guards.yml \
-                   .github/workflows/workflow-diff-gate.yml \
-                   .github/workflows/actionlint.yml \
                    .github/workflows/security-scan.yml \
                    .gitleaks.toml; do
             if ! git cat-file -e "origin/$BASE:$f" 2>/dev/null; then
@@ -255,3 +439,113 @@ jobs:
             cp .github/guards/repo-guard.py "$TRUSTED"
           fi
           python3 "$TRUSTED" integrity --absent "$ABSENT" --changed "$CHANGED"
+
+  # ---------------------------------------------------------------------------------------------
+  # TRANSITIONAL ALIASES -- one per context `guards` supersedes. Read the header block
+  # "THE TRANSITIONAL ALIAS JOBS" before touching these. Each one: SKIPPED (reported as Success,
+  # billed nothing) when `guards` succeeded; RUNS AND FAILS when `guards` failed, was cancelled or
+  # was skipped. They carry no check of their own -- the check is `guards`.
+  # ---------------------------------------------------------------------------------------------
+  capability-gate:
+    name: capability-gate
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::capability-gate is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  phase0f-gate:
+    name: phase0f-gate
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::phase0f-gate is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  ci-lint-gate:
+    name: ci-lint-gate
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::ci-lint-gate is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  repo-security-guardian:
+    name: repo-security-guardian
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::repo-security-guardian is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  graphify-graph-guard:
+    name: graphify-graph-guard
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::graphify-graph-guard is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  block-automerge:
+    name: block-automerge
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::block-automerge is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  actionlint:
+    name: actionlint
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::actionlint is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
+
+  workflow-diff-gate:
+    name: workflow-diff-gate
+    needs: guards
+    if: ${{ always() && needs.guards.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: guards did not succeed
+        env:
+          RESULT: ${{ needs.guards.result }}
+        run: |
+          echo "::error title=guards did not succeed::workflow-diff-gate is now a step of the guards job, which ended '$RESULT'. Read that job's step list."
+          exit 1
